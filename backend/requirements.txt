@@ -1,0 +1,29 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+pydantic==2.8.2
+pydantic-settings==2.4.0
+
+# ── LLM providers (install at least one) ──────────────────────────────────────
+groq==0.11.0               # Free tier — recommended for testing
+openai==1.45.0             # Optional, paid
+
+# ── Audio transcription ───────────────────────────────────────────────────────
+av>=13.0.0
+faster-whisper      # Local Whisper — completely free, runs on CPU, cleaner install
+
+# ── Vision / Video ────────────────────────────────────────────────────────────
+opencv-python-headless==4.10.0.84
+ffmpeg-python==0.2.0
+Pillow==10.4.0
+
+# ── Embeddings (local, free) ──────────────────────────────────────────────────
+sentence-transformers==3.1.1
+
+# ── Vector Store ──────────────────────────────────────────────────────────────
+chromadb==0.5.12
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+httpx==0.27.2
+aiofiles==24.1.0

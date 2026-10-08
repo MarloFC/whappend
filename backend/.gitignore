@@ -1,0 +1,17 @@
+# Backend .gitignore
+.env
+.env.*
+!.env.example
+*.env
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.log
+storage/videos/*
+!storage/videos/.gitkeep
+storage/frames/*
+!storage/frames/.gitkeep
+storage/chroma/*
+!storage/chroma/.gitkeep
+scratch/

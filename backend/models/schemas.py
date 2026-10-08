@@ -96,13 +96,35 @@ class EventsResponse(BaseModel):
     total: int
 
 
+class ChatMessage(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
+
+
+class Chapter(BaseModel):
+    start_time: float
+    end_time: float
+    title: str
+    summary: str
+    key_topics: list[str] = []
+
+
+class ChaptersResponse(BaseModel):
+    video_id: str
+    overview: str
+    chapters: list[Chapter]
+
+
 class QuestionRequest(BaseModel):
     question: str
     video_id: str
     groq_api_key: Optional[str] = None
+    history: Optional[list[ChatMessage]] = None
+    use_agent: bool = False
 
 
 class QuestionResponse(BaseModel):
     answer: str
     relevant_events: list[TimelineEvent]
     video_id: str
+    used_agent: bool = False

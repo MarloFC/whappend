@@ -18,7 +18,12 @@ import chromadb
 from chromadb import Documents, EmbeddingFunction, Embeddings
 
 from config import settings
-from models.schemas import TimelineEvent, QuestionResponse
+from models.schemas import TimelineEvent, QuestionResponse, ChatMessage
+from services.langchain_service import (
+    answer_with_conversational_memory,
+    generate_multi_query,
+    run_video_agent,
+)
 
 # ─── Embedding functions ───────────────────────────────────────────────────────
 
@@ -184,6 +189,8 @@ def answer_question(
     all_events: list[TimelineEvent],
     top_k: int = 6,
     groq_api_key: Optional[str] = None,
+    history: Optional[list[ChatMessage]] = None,
+    use_agent: bool = False,
 ) -> QuestionResponse:
     if settings.mock_mode:
         relevant = sorted(all_events, key=lambda e: e.timestamp)[:top_k]
@@ -191,18 +198,57 @@ def answer_question(
             answer=_mock_answer(question, relevant),
             relevant_events=relevant,
             video_id=video_id,
+            used_agent=use_agent,
         )
 
+    # ── Option A: AI Agent Mode with Tool Calling ─────────────────────────────
+    if use_agent:
+        agent_answer, agent_events = run_video_agent(
+            video_id=video_id,
+            question=question,
+            events=all_events,
+            history=history,
+            groq_api_key=groq_api_key,
+        )
+        return QuestionResponse(
+            answer=agent_answer,
+            relevant_events=agent_events or all_events[:4],
+            video_id=video_id,
+            used_agent=True,
+        )
+
+    # ── Option B: LangChain Multi-Query + Conversational Memory RAG ───────────
     client, ef = _get_chroma()
     col_name = _collection_name(video_id)
     collection = client.get_collection(name=col_name, embedding_function=ef)
 
-    n = min(top_k, collection.count())
-    if n == 0:
-        return QuestionResponse(answer="No events found to answer from.", relevant_events=[], video_id=video_id)
+    total_count = collection.count()
+    if total_count == 0:
+        return QuestionResponse(
+            answer="No events found to answer from.",
+            relevant_events=[],
+            video_id=video_id,
+            used_agent=False,
+        )
 
-    results = collection.query(query_texts=[question], n_results=n)
-    retrieved_ids = set(results["ids"][0])
+    # Generate 3 multi-query perspectives to boost recall
+    queries = generate_multi_query(question, groq_api_key=groq_api_key)
+
+    retrieved_ids = set()
+    per_query_n = max(2, min(4, total_count))
+    for q in queries:
+        try:
+            res = collection.query(query_texts=[q], n_results=per_query_n)
+            for doc_id in res["ids"][0]:
+                retrieved_ids.add(doc_id)
+        except Exception:
+            pass
+
+    if not retrieved_ids:
+        # Fallback to single original query
+        res = collection.query(query_texts=[question], n_results=min(top_k, total_count))
+        retrieved_ids = set(res["ids"][0])
+
     relevant_events = [e for e in all_events if e.id in retrieved_ids]
     relevant_events.sort(key=lambda e: e.timestamp)
 
@@ -211,5 +257,17 @@ def answer_question(
         for e in relevant_events
     )
 
-    answer = _call_llm(context, question, groq_api_key=groq_api_key)
-    return QuestionResponse(answer=answer, relevant_events=relevant_events, video_id=video_id)
+    # Answer using LangChain Conversational Memory Chain
+    answer = answer_with_conversational_memory(
+        context=context,
+        question=question,
+        history=history,
+        groq_api_key=groq_api_key,
+    )
+
+    return QuestionResponse(
+        answer=answer,
+        relevant_events=relevant_events,
+        video_id=video_id,
+        used_agent=False,
+    )

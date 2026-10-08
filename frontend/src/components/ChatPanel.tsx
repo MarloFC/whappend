@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, Loader2, Sparkles, MessageSquareQuote } from "lucide-react";
+import { Send, Loader2, Sparkles, MessageSquareQuote, Bot, Zap } from "lucide-react";
 import type { TimelineEvent, QuestionResponse, MediaType } from "@/lib/types";
 import { formatTimestamp, eventIcon } from "@/lib/utils";
 import { askQuestion } from "@/lib/api";
@@ -11,6 +11,7 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   relevantEvents?: TimelineEvent[];
+  usedAgent?: boolean;
 }
 
 interface Props {
@@ -30,6 +31,7 @@ export default function ChatPanel({ videoId, mediaType = "video", onEventHighlig
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [useAgent, setUseAgent] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -50,13 +52,20 @@ export default function ChatPanel({ videoId, mediaType = "video", onEventHighlig
     setInput("");
     setLoading(true);
 
+    // Format chat history for conversational memory
+    const history = messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+    }));
+
     try {
-      const res: QuestionResponse = await askQuestion(videoId, q);
+      const res: QuestionResponse = await askQuestion(videoId, q, history, useAgent);
       const assistantMsg: Message = {
         id: generateId(),
         role: "assistant",
         content: res.answer,
         relevantEvents: res.relevant_events,
+        usedAgent: res.used_agent,
       };
       setMessages((prev) => [...prev, assistantMsg]);
     } catch {
@@ -77,14 +86,25 @@ export default function ChatPanel({ videoId, mediaType = "video", onEventHighlig
   return (
     <div className="chat-panel">
       <div className="chat-header">
-        <Sparkles size={16} />
-        <span>
-          {mediaType === "image"
-            ? "Ask about this image"
-            : mediaType === "audio"
-            ? "Ask about this audio"
-            : "Ask about this video"}
-        </span>
+        <div className="chat-header-title">
+          <Sparkles size={16} />
+          <span>
+            {mediaType === "image"
+              ? "Ask about this image"
+              : mediaType === "audio"
+              ? "Ask about this audio"
+              : "Ask about this video"}
+          </span>
+        </div>
+        <button
+          type="button"
+          className={`chat-agent-toggle ${useAgent ? "chat-agent-toggle--active" : ""}`}
+          onClick={() => setUseAgent(!useAgent)}
+          title={useAgent ? "Click to switch to Fast RAG" : "Click to enable LangChain Tool-Calling Agent"}
+        >
+          {useAgent ? <Bot size={13} /> : <Zap size={13} />}
+          <span>{useAgent ? "Agent Mode" : "Fast RAG"}</span>
+        </button>
       </div>
 
       <div className="chat-messages">
@@ -134,6 +154,12 @@ export default function ChatPanel({ videoId, mediaType = "video", onEventHighlig
 
         {messages.map((msg) => (
           <div key={msg.id} className={`chat-message chat-message--${msg.role}`}>
+            {msg.usedAgent && (
+              <div className="agent-badge">
+                <Bot size={11} />
+                <span>LangChain Agent Reasoned</span>
+              </div>
+            )}
             <div className="chat-bubble">
               <p>{msg.content}</p>
             </div>

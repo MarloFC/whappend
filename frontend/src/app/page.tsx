@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { Film, Loader2, CheckCircle, AlertCircle, ChevronRight, Key } from "lucide-react";
+import { Film, Loader2, CheckCircle, AlertCircle, ChevronRight, Key, BookOpen, ListTree } from "lucide-react";
 import VideoUploader from "@/components/VideoUploader";
 import MediaViewer, { resolveMediaType } from "@/components/MediaViewer";
 import EventTimeline from "@/components/EventTimeline";
+import ChaptersView from "@/components/ChaptersView";
 import ChatPanel from "@/components/ChatPanel";
 import ApiKeyModal from "@/components/ApiKeyModal";
 import { uploadVideo, getVideoStatus, getVideoEvents, getStoredApiKey } from "@/lib/api";
@@ -20,6 +21,7 @@ export default function Home() {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [, setStatus] = useState<VideoStatus>("pending");
   const [events, setEvents] = useState<TimelineEvent[]>([]);
+  const [activeTab, setActiveTab] = useState<"timeline" | "chapters">("timeline");
   const [activeEventId, setActiveEventId] = useState<string | undefined>();
   const [seekTo, setSeekTo] = useState<number | undefined>();
   const [error, setError] = useState<string | null>(null);
@@ -97,6 +99,7 @@ export default function Home() {
     setEvents([]);
     setActiveEventId(undefined);
     setError(null);
+    setActiveTab("timeline");
   };
 
   return (
@@ -233,23 +236,51 @@ export default function Home() {
                 }}
               />
               <div className="timeline-container">
-                <div className="timeline-header">
-                  <CheckCircle size={16} className="text-success" />
-                  <span>
-                    {events.length}{" "}
-                    {mediaType === "image"
-                      ? "visual elements extracted"
-                      : mediaType === "audio"
-                      ? "speech segments transcribed"
-                      : "timeline events detected"}
-                  </span>
+                <div className="workspace-tabs-header">
+                  <div className="workspace-tabs">
+                    <button
+                      className={`workspace-tab ${activeTab === "timeline" ? "workspace-tab--active" : ""}`}
+                      onClick={() => setActiveTab("timeline")}
+                    >
+                      <ListTree size={15} />
+                      <span>Events ({events.length})</span>
+                    </button>
+                    <button
+                      className={`workspace-tab ${activeTab === "chapters" ? "workspace-tab--active" : ""}`}
+                      onClick={() => setActiveTab("chapters")}
+                    >
+                      <BookOpen size={15} />
+                      <span>AI Chapters</span>
+                    </button>
+                  </div>
+                  <div className="timeline-header-meta">
+                    <CheckCircle size={14} className="text-success" />
+                    <span>
+                      {mediaType === "image"
+                        ? "Visual metadata"
+                        : mediaType === "audio"
+                        ? "Speech transcribed"
+                        : "Events indexed"}
+                    </span>
+                  </div>
                 </div>
-                <EventTimeline
-                  events={events}
-                  activeEventId={activeEventId}
-                  onEventClick={handleEventClick}
-                  isStatic={mediaType === "image"}
-                />
+
+                {activeTab === "timeline" ? (
+                  <EventTimeline
+                    events={events}
+                    activeEventId={activeEventId}
+                    onEventClick={handleEventClick}
+                    isStatic={mediaType === "image"}
+                  />
+                ) : (
+                  <ChaptersView
+                    videoId={videoId}
+                    onSeek={(timestamp) => {
+                      setSeekTo(Math.max(0, timestamp - 0.15));
+                      setTimeout(() => setSeekTo(undefined), 100);
+                    }}
+                  />
+                )}
               </div>
             </div>
 

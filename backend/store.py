@@ -3,10 +3,11 @@ In-memory video store (replace with SQLite/Postgres in production).
 Stores VideoRecord objects and their associated timeline events.
 """
 
-from models.schemas import VideoRecord, TimelineEvent
+from models.schemas import VideoRecord, TimelineEvent, ChaptersResponse
 
 _videos: dict[str, VideoRecord] = {}
 _events: dict[str, list[TimelineEvent]] = {}
+_chapters: dict[str, ChaptersResponse] = {}
 
 
 def save_video(video: VideoRecord) -> VideoRecord:
@@ -33,3 +34,12 @@ def save_events(video_id: str, events: list[TimelineEvent]) -> None:
 
 def get_events(video_id: str) -> list[TimelineEvent]:
     return _events.get(video_id, [])
+
+
+def save_chapters(video_id: str, chapters: ChaptersResponse) -> ChaptersResponse:
+    _chapters[video_id] = chapters
+    return chapters
+
+
+def get_chapters(video_id: str) -> ChaptersResponse | None:
+    return _chapters.get(video_id)

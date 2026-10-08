@@ -3,6 +3,8 @@ import type {
   VideoStatusResponse,
   EventsResponse,
   QuestionResponse,
+  ChaptersResponse,
+  ChatMessage,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -120,7 +122,9 @@ export async function listVideos(): Promise<VideoStatusResponse[]> {
 
 export async function askQuestion(
   videoId: string,
-  question: string
+  question: string,
+  history?: ChatMessage[],
+  useAgent: boolean = false,
 ): Promise<QuestionResponse> {
   const authHeaders = getAuthHeaders();
   const res = await fetch(`${BASE}/ask`, {
@@ -129,7 +133,25 @@ export async function askQuestion(
       "Content-Type": "application/json",
       ...authHeaders,
     },
-    body: JSON.stringify({ video_id: videoId, question }),
+    body: JSON.stringify({
+      video_id: videoId,
+      question,
+      history,
+      use_agent: useAgent,
+    }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// ─── Chapters (LangChain Structured Output) ──────────────────────────────────
+
+export async function getVideoChapters(videoId: string): Promise<ChaptersResponse> {
+  const authHeaders = getAuthHeaders();
+  const res = await fetch(`${BASE}/videos/${videoId}/chapters`, {
+    headers: {
+      ...authHeaders,
+    },
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();

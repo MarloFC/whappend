@@ -27,3 +27,8 @@ chromadb==0.5.12
 python-dotenv==1.0.1
 httpx==0.27.2
 aiofiles==24.1.0
+
+# ── LangChain & AI Orchestration ──────────────────────────────────────────────
+langchain
+langchain-core
+langchain-groq

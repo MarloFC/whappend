@@ -42,5 +42,7 @@ async def ask_question(
         question=body.question,
         all_events=all_events,
         groq_api_key=client_key,
+        history=body.history,
+        use_agent=body.use_agent,
     )
     return result

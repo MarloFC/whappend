@@ -48,8 +48,28 @@ export interface EventsResponse {
   total: number;
 }
 
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface Chapter {
+  start_time: number;
+  end_time: number;
+  title: string;
+  summary: string;
+  key_topics: string[];
+}
+
+export interface ChaptersResponse {
+  video_id: string;
+  overview: string;
+  chapters: Chapter[];
+}
+
 export interface QuestionResponse {
   answer: string;
   relevant_events: TimelineEvent[];
   video_id: string;
+  used_agent?: boolean;
 }

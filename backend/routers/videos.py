@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse
 from config import settings
 from models.schemas import (
     VideoRecord, VideoStatus, TimelineEvent, EventType,
-    VideoUploadResponse, VideoStatusResponse, EventsResponse,
+    VideoUploadResponse, VideoStatusResponse, EventsResponse, ChaptersResponse,
 )
 import store
 from services.frame_extractor import extract_frames
@@ -24,6 +24,7 @@ from services.vision_service import analyze_all_frames, analyze_single_image
 from services.audio_service import transcribe_video
 from services.event_merger import merge_events
 from services.rag_service import index_events
+from services.langchain_service import generate_video_chapters
 
 router = APIRouter(prefix="/videos", tags=["videos"])
 
@@ -284,3 +285,34 @@ async def get_media_file(video_id: str):
         media_type=media_content_type,
         filename=video.original_name
     )
+
+
+@router.get("/{video_id}/chapters", response_model=ChaptersResponse)
+async def get_video_chapters(
+    video_id: str,
+    x_groq_api_key: Optional[str] = Header(None, alias="X-Groq-Api-Key"),
+):
+    """
+    Generates and returns structured AI chapters for the media using LangChain.
+    Chapters are synthesized from the timeline and cached for subsequent requests.
+    """
+    video = store.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Media not found.")
+    if video.status != VideoStatus.COMPLETED:
+        raise HTTPException(status_code=202, detail=f"Media is still {video.status.value}.")
+
+    # Check cache first
+    cached = store.get_chapters(video_id)
+    if cached:
+        return cached
+
+    events = store.get_events(video_id)
+    chapters = generate_video_chapters(
+        video_id=video_id,
+        events=events,
+        duration_seconds=video.duration_seconds,
+        groq_api_key=x_groq_api_key,
+    )
+    store.save_chapters(video_id, chapters)
+    return chapters

@@ -13,6 +13,7 @@ except Exception:
     pass
 
 import json
+from typing import Optional
 import chromadb
 from chromadb import Documents, EmbeddingFunction, Embeddings
 

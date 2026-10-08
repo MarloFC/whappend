@@ -7,6 +7,7 @@ import os
 import random
 import subprocess
 import tempfile
+from typing import Optional
 from config import settings
 from models.schemas import AudioEvent
 

@@ -6,6 +6,7 @@ Supports: OpenAI, Gemini, Groq, Real OpenCV Computer Vision, or Mock mode.
 import base64
 import json
 import random
+from typing import Optional
 from config import settings
 from models.schemas import VisualEvent, EventType
 

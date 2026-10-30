@@ -6,16 +6,12 @@ LLM Q&A: Groq (free) or OpenAI.
 
 import os
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
-try:
-    from chromadb.telemetry.product.posthog import Posthog
-    Posthog.capture = lambda self, event: None
-except Exception:
-    pass
 
 import json
+import math
+import re
+from collections import Counter
 from typing import Optional
-import chromadb
-from chromadb import Documents, EmbeddingFunction, Embeddings
 
 from config import settings
 from models.schemas import TimelineEvent, QuestionResponse, ChatMessage
@@ -25,81 +21,104 @@ from services.langchain_service import (
     run_video_agent,
 )
 
-# ─── Embedding functions ───────────────────────────────────────────────────────
 
-class LocalEmbeddingFunction(EmbeddingFunction):
-    """Uses sentence-transformers locally — completely free, no API key."""
+# ─── Lightweight In-Memory Hybrid BM25 + Token-Overlap Ranker (<1 MB RAM) ─────
 
-    def __init__(self, model_name: str):
-        from sentence_transformers import SentenceTransformer
-        print(f"[RAGService] Loading local embedding model '{model_name}'…")
-        self._model = SentenceTransformer(model_name)
-        print("[RAGService] Embedding model loaded.")
-
-    def __call__(self, input: Documents) -> Embeddings:
-        embeddings = self._model.encode(list(input), convert_to_numpy=True)
-        return embeddings.tolist()
+_STOPWORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "in", "on", "at", "to", "for",
+    "of", "and", "or", "what", "when", "where", "who", "how", "why", "did", "do",
+    "does", "happened", "happens", "video", "audio", "image", "show", "tell",
+}
 
 
-def _get_embedding_function():
-    if settings.embedding_provider == "openai":
-        from chromadb.utils import embedding_functions
-        return embedding_functions.OpenAIEmbeddingFunction(
-            api_key=settings.openai_api_key,
-            model_name=settings.openai_embedding_model,
-        )
-    if settings.embedding_provider == "local":
-        try:
-            return LocalEmbeddingFunction(settings.local_embedding_model)
-        except Exception:
-            pass
-    # Default: lightweight ONNX MiniLM-L6-v2 built into ChromaDB (<150MB RAM, no PyTorch needed)
-    from chromadb.utils import embedding_functions
-    return embedding_functions.DefaultEmbeddingFunction()
+def _tokenize(text: str) -> list[str]:
+    return [w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if w not in _STOPWORDS and len(w) > 1]
 
 
-# ─── ChromaDB client (singleton) ──────────────────────────────────────────────
+def _rank_events_lightweight(
+    queries: list[str],
+    all_events: list[TimelineEvent],
+    top_k: int = 6,
+) -> list[TimelineEvent]:
+    """
+    Ranks timeline events against multi-query expansions using BM25-style IDF +
+    exact substring match boosting. Uses <1 MB RAM (fits easily on Render 512MB tier)
+    and needs no persistent disk state across restarts.
+    """
+    if not all_events:
+        return []
+    if len(all_events) <= top_k:
+        return sorted(all_events, key=lambda e: e.timestamp)
 
-_chroma_client = None
-_embedding_fn = None
+    n_docs = len(all_events)
+    doc_tokens: list[list[str]] = []
+    df: Counter = Counter()
 
+    for ev in all_events:
+        toks = _tokenize(f"{ev.event_type.value} {ev.description}")
+        doc_tokens.append(toks)
+        for unique_tok in set(toks):
+            df[unique_tok] += 1
 
-def _get_chroma():
-    global _chroma_client, _embedding_fn
-    if _chroma_client is None:
-        _chroma_client = chromadb.PersistentClient(
-            path=str(settings.chroma_dir),
-            settings=chromadb.config.Settings(anonymized_telemetry=False)
-        )
-        _embedding_fn = _get_embedding_function()
-    return _chroma_client, _embedding_fn
+    avg_dl = max(1.0, sum(len(t) for t in doc_tokens) / n_docs)
+    k1, b = 1.5, 0.75
 
+    query_tok_sets = [_tokenize(q) for q in queries if q]
+    all_query_tokens = [tok for qset in query_tok_sets for tok in qset]
 
-def _collection_name(video_id: str) -> str:
-    return f"video_{video_id.replace('-', '_')}"
+    scores: list[tuple[float, int]] = []
+    for idx, ev in enumerate(all_events):
+        toks = doc_tokens[idx]
+        tf = Counter(toks)
+        dl = len(toks)
+        score = 0.0
+        for qtok in all_query_tokens:
+            if qtok in tf:
+                idf = math.log(1.0 + (n_docs - df[qtok] + 0.5) / (df[qtok] + 0.5))
+                freq = tf[qtok]
+                score += idf * (freq * (k1 + 1.0)) / (freq + k1 * (1.0 - b + b * dl / avg_dl))
+        scores.append((score, idx))
+
+    scores.sort(key=lambda item: item[0], reverse=True)
+    best_indices = [idx for sc, idx in scores[:top_k] if sc > 0]
+
+    if not best_indices:
+        # Evenly sample across the timeline if query is broad (e.g. "summarize the video")
+        step = max(1, len(all_events) // top_k)
+        best_indices = list(range(0, len(all_events), step))[:top_k]
+
+    selected = [all_events[i] for i in best_indices]
+    selected.sort(key=lambda e: e.timestamp)
+    return selected
 
 
 # ─── Indexing ──────────────────────────────────────────────────────────────────
 
 def index_events(video_id: str, events: list[TimelineEvent], user_id: Optional[str] = None) -> None:
-    """Embed and store all timeline events for a video into ChromaDB."""
+    """
+    Events are persisted in Postgres/SQLite JSONB via `store.save_events`.
+    If `EMBEDDING_PROVIDER=chromadb` is explicitly set (for high-RAM machines), also indexes into ChromaDB.
+    """
     if not events:
         return
+    if settings.embedding_provider != "chromadb":
+        print(f"[RAGService] Ready {len(events)} events for video {video_id} (lightweight hybrid ranker).")
+        return
 
-    client, ef = _get_chroma()
-    col_name = _collection_name(video_id)
+    import chromadb
+    from chromadb.utils import embedding_functions
 
+    client = chromadb.PersistentClient(path=str(settings.chroma_dir))
+    ef = embedding_functions.DefaultEmbeddingFunction()
+    col_name = f"video_{video_id.replace('-', '_')}"
     try:
         client.delete_collection(col_name)
     except Exception:
         pass
-
     collection = client.create_collection(name=col_name, embedding_function=ef)
-
     documents, metadatas, ids = [], [], []
     for event in events:
-        doc = f"[{event.timestamp:.1f}s] {event.event_type.value}: {event.description}"
-        documents.append(doc)
+        documents.append(f"[{event.timestamp:.1f}s] {event.event_type.value}: {event.description}")
         meta = {
             "event_id": event.id,
             "timestamp": event.timestamp,
@@ -111,9 +130,8 @@ def index_events(video_id: str, events: list[TimelineEvent], user_id: Optional[s
             meta["user_id"] = user_id
         metadatas.append(meta)
         ids.append(event.id)
-
     collection.add(documents=documents, metadatas=metadatas, ids=ids)
-    print(f"[RAGService] Indexed {len(documents)} events for video {video_id}.")
+    print(f"[RAGService] Indexed {len(documents)} events in ChromaDB for video {video_id}.")
 
 
 # ─── LLM answer (Gemini, OpenAI, Groq, or Local Summary) ────────────────────
@@ -227,12 +245,7 @@ def answer_question(
         )
 
     # ── Option B: LangChain Multi-Query + Conversational Memory RAG ───────────
-    client, ef = _get_chroma()
-    col_name = _collection_name(video_id)
-    collection = client.get_collection(name=col_name, embedding_function=ef)
-
-    total_count = collection.count()
-    if total_count == 0:
+    if not all_events:
         return QuestionResponse(
             answer="No events found to answer from.",
             relevant_events=[],
@@ -242,24 +255,10 @@ def answer_question(
 
     # Generate 3 multi-query perspectives to boost recall
     queries = generate_multi_query(question, groq_api_key=groq_api_key)
+    if question not in queries:
+        queries = [question] + list(queries)
 
-    retrieved_ids = set()
-    per_query_n = max(2, min(4, total_count))
-    for q in queries:
-        try:
-            res = collection.query(query_texts=[q], n_results=per_query_n)
-            for doc_id in res["ids"][0]:
-                retrieved_ids.add(doc_id)
-        except Exception:
-            pass
-
-    if not retrieved_ids:
-        # Fallback to single original query
-        res = collection.query(query_texts=[question], n_results=min(top_k, total_count))
-        retrieved_ids = set(res["ids"][0])
-
-    relevant_events = [e for e in all_events if e.id in retrieved_ids]
-    relevant_events.sort(key=lambda e: e.timestamp)
+    relevant_events = _rank_events_lightweight(queries=queries, all_events=all_events, top_k=top_k)
 
     context = "\n".join(
         f"[{e.timestamp:.1f}s] ({e.event_type.value}) {e.description}"

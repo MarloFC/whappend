@@ -3,7 +3,6 @@ Frame extractor service.
 Uses OpenCV + FFmpeg to pull one frame every N seconds from the video.
 """
 
-import cv2
 import os
 from pathlib import Path
 
@@ -18,6 +17,8 @@ def extract_frames(video: VideoRecord) -> list[dict]:
     Returns a list of dicts:
         [{"timestamp": float, "path": str}, ...]
     """
+    import cv2
+
     video_path = settings.storage_dir / "videos" / video.filename
     frames_dir = settings.storage_dir / "frames" / video.id
     frames_dir.mkdir(parents=True, exist_ok=True)

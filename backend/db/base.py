@@ -15,7 +15,15 @@ from config import settings
 
 def _normalize_url(url: str) -> str:
     """Neon gives `postgresql://` / `postgres://`; we want the psycopg (v3) driver."""
-    if not url:
+    url = (url or "").strip().strip("'\"")
+    if url.startswith("psql "):
+        url = url[len("psql "):].strip().strip("'\"")
+    if not url or url.startswith(("http://", "https://")):
+        if url.startswith(("http://", "https://")):
+            print(
+                f"[DB WARNING] DATABASE_URL starts with '{url.split('://')[0]}://' (not a valid Postgres URL). "
+                "Falling back to local SQLite until you set DATABASE_URL=postgresql://..."
+            )
         return f"sqlite:///{(settings.storage_dir / 'whappend.db').as_posix()}"
     if url.startswith("postgres://"):
         url = "postgresql://" + url[len("postgres://"):]

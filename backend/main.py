@@ -1,13 +1,6 @@
 import os
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
-# Silence ChromaDB telemetry argument mismatch bug
-try:
-    from chromadb.telemetry.product.posthog import Posthog
-    Posthog.capture = lambda self, event: None
-except Exception:
-    pass
-
 from contextlib import asynccontextmanager
 import asyncio
 from typing import Optional

@@ -21,16 +21,16 @@ groq==0.11.0
 openai==1.45.0
 
 # ── Audio transcription ───────────────────────────────────────────────────────
-av>=13.0.0
-faster-whisper
+# Groq Whisper (whisper-large-v3-turbo) runs in the cloud via the `groq` SDK above.
+imageio-ffmpeg>=0.5.1
 
 # ── Vision / Video ────────────────────────────────────────────────────────────
 opencv-python-headless==4.10.0.84
 ffmpeg-python==0.2.0
 Pillow==10.4.0
 
-# ── Embeddings (local, free) ──────────────────────────────────────────────────
-sentence-transformers==3.1.1
+# ── Embeddings (ChromaDB built-in ONNX Runtime — lightweight for 512MB RAM) ───
+onnxruntime>=1.19.0
 
 # ── Vector Store ──────────────────────────────────────────────────────────────
 chromadb==0.5.12

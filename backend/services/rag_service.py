@@ -48,16 +48,14 @@ def _get_embedding_function():
             api_key=settings.openai_api_key,
             model_name=settings.openai_embedding_model,
         )
-    if settings.embedding_provider == "onnx":
-        # Lightweight ONNX MiniLM-L6-v2 built into ChromaDB — no PyTorch required (<150MB RAM)
-        from chromadb.utils import embedding_functions
-        return embedding_functions.DefaultEmbeddingFunction()
-    # Default: local sentence-transformers ( falls back to ONNX if sentence-transformers isn't installed )
-    try:
-        return LocalEmbeddingFunction(settings.local_embedding_model)
-    except ImportError:
-        from chromadb.utils import embedding_functions
-        return embedding_functions.DefaultEmbeddingFunction()
+    if settings.embedding_provider == "local":
+        try:
+            return LocalEmbeddingFunction(settings.local_embedding_model)
+        except Exception:
+            pass
+    # Default: lightweight ONNX MiniLM-L6-v2 built into ChromaDB (<150MB RAM, no PyTorch needed)
+    from chromadb.utils import embedding_functions
+    return embedding_functions.DefaultEmbeddingFunction()
 
 
 # ─── ChromaDB client (singleton) ──────────────────────────────────────────────

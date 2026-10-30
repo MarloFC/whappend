@@ -9,6 +9,7 @@ except Exception:
     pass
 
 from contextlib import asynccontextmanager
+import asyncio
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
@@ -21,18 +22,33 @@ from db.base import init_db, session_scope
 from routers import admin, ask, auth, keys, videos
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # 1. Initialize database tables (Neon Postgres or local SQLite)
-    init_db()
-    # 2. Seed any ADMIN_PHONES defined in .env into the allowlist
-    with session_scope() as db:
-        seeded = seed_admin_phones(db)
+async def _startup_background():
+    """Runs DB table init, admin seeding, and Telegram bot startup AFTER uvicorn binds to $PORT."""
+    try:
+        await asyncio.to_thread(init_db)
+        def _seed():
+            with session_scope() as db:
+                return seed_admin_phones(db)
+        seeded = await asyncio.to_thread(_seed)
         if seeded:
             print(f"[Startup] Seeded {seeded} admin phone number(s) from ADMIN_PHONES.")
-    # 3. Start Telegram bot (webhook if TELEGRAM_WEBHOOK_URL set, otherwise long-polling)
-    await start_bot_lifecycle()
+    except Exception as exc:
+        print(f"[Startup] Database initialization error: {exc}")
+
+    try:
+        await start_bot_lifecycle()
+    except Exception as exc:
+        print(f"[Startup] Telegram bot startup error: {exc}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    import asyncio
+    # Fire initialization as a non-blocking task so uvicorn binds $PORT immediately for Render healthchecks
+    startup_task = asyncio.create_task(_startup_background())
     yield
+    if not startup_task.done():
+        startup_task.cancel()
     await stop_bot_lifecycle()
 
 

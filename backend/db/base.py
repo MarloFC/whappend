@@ -21,6 +21,8 @@ def _normalize_url(url: str) -> str:
         url = "postgresql://" + url[len("postgres://"):]
     if url.startswith("postgresql://"):
         url = "postgresql+psycopg://" + url[len("postgresql://"):]
+    # Strip channel_binding=require if present (can hang older libpq builds on Linux containers)
+    url = url.replace("&channel_binding=require", "").replace("?channel_binding=require&", "?")
     return url
 
 
@@ -32,7 +34,7 @@ engine = create_engine(
     # Neon suspends idle compute; pre_ping transparently replaces dead connections.
     pool_pre_ping=True,
     pool_recycle=300,
-    connect_args={"check_same_thread": False} if IS_SQLITE else {},
+    connect_args={"check_same_thread": False} if IS_SQLITE else {"connect_timeout": 10},
 )
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)

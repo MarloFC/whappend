@@ -339,7 +339,7 @@ def _analyze_groq(frames: list[dict], groq_api_key: Optional[str] = None) -> lis
     Encodes up to 4 frames as a single image, strictly complying with
     Groq's 3-image max limit and preserving token quota.
     """
-    effective_key = groq_api_key or settings.groq_api_key
+    effective_key = (groq_api_key or "").strip()
     if not effective_key:
         raise ValueError("Groq API key is missing.")
     from groq import Groq
@@ -415,9 +415,9 @@ def analyze_frame_batch(frames: list[dict], groq_api_key: Optional[str] = None) 
     if settings.mock_mode:
         return _mock_analyze(frames)
 
-    effective_groq = groq_api_key or settings.groq_api_key
+    effective_groq = (groq_api_key or "").strip()
     provider = (settings.llm_provider or "").lower()
-    if provider == "gemini" and settings.gemini_api_key:
+    if provider == "gemini" and getattr(settings, "gemini_api_key", ""):
         return _analyze_gemini(frames)
     elif provider == "openai" and settings.openai_api_key:
         return _analyze_openai(frames)
@@ -425,7 +425,7 @@ def analyze_frame_batch(frames: list[dict], groq_api_key: Optional[str] = None) 
         return _analyze_groq(frames, groq_api_key=effective_groq)
     
     # Try any available API key if specific provider key isn't present
-    if settings.gemini_api_key:
+    if getattr(settings, "gemini_api_key", ""):
         return _analyze_gemini(frames)
     if settings.openai_api_key:
         return _analyze_openai(frames)
@@ -517,7 +517,7 @@ def analyze_single_image(image_path: str, groq_api_key: Optional[str] = None) ->
         }
     ]
 
-    effective_key = groq_api_key or settings.groq_api_key
+    effective_key = (groq_api_key or "").strip()
     try:
         if effective_key:
             from groq import Groq

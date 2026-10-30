@@ -4,13 +4,25 @@ python-multipart==0.0.9
 pydantic==2.8.2
 pydantic-settings==2.4.0
 
-# ── LLM providers (install at least one) ──────────────────────────────────────
-groq==0.11.0               # Free tier — recommended for testing
-openai==1.45.0             # Optional, paid
+# ── Database (Neon Postgres + SQLite fallback) ────────────────────────────────
+sqlalchemy>=2.0.30
+psycopg[binary]>=3.2
+
+# ── Security, Auth, Encryption & Phone E.164 ──────────────────────────────────
+cryptography>=43.0.0
+PyJWT>=2.9.0
+phonenumbers>=8.13.0
+
+# ── Telegram Bot ──────────────────────────────────────────────────────────────
+aiogram>=3.13.0,<4.0.0
+
+# ── LLM providers (BYOK per user) ─────────────────────────────────────────────
+groq==0.11.0
+openai==1.45.0
 
 # ── Audio transcription ───────────────────────────────────────────────────────
 av>=13.0.0
-faster-whisper      # Local Whisper — completely free, runs on CPU, cleaner install
+faster-whisper
 
 # ── Vision / Video ────────────────────────────────────────────────────────────
 opencv-python-headless==4.10.0.84

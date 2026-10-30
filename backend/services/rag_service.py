@@ -48,8 +48,16 @@ def _get_embedding_function():
             api_key=settings.openai_api_key,
             model_name=settings.openai_embedding_model,
         )
-    # Default: local sentence-transformers
-    return LocalEmbeddingFunction(settings.local_embedding_model)
+    if settings.embedding_provider == "onnx":
+        # Lightweight ONNX MiniLM-L6-v2 built into ChromaDB — no PyTorch required (<150MB RAM)
+        from chromadb.utils import embedding_functions
+        return embedding_functions.DefaultEmbeddingFunction()
+    # Default: local sentence-transformers ( falls back to ONNX if sentence-transformers isn't installed )
+    try:
+        return LocalEmbeddingFunction(settings.local_embedding_model)
+    except ImportError:
+        from chromadb.utils import embedding_functions
+        return embedding_functions.DefaultEmbeddingFunction()
 
 
 # ─── ChromaDB client (singleton) ──────────────────────────────────────────────
@@ -75,7 +83,7 @@ def _collection_name(video_id: str) -> str:
 
 # ─── Indexing ──────────────────────────────────────────────────────────────────
 
-def index_events(video_id: str, events: list[TimelineEvent]) -> None:
+def index_events(video_id: str, events: list[TimelineEvent], user_id: Optional[str] = None) -> None:
     """Embed and store all timeline events for a video into ChromaDB."""
     if not events:
         return
@@ -94,13 +102,16 @@ def index_events(video_id: str, events: list[TimelineEvent]) -> None:
     for event in events:
         doc = f"[{event.timestamp:.1f}s] {event.event_type.value}: {event.description}"
         documents.append(doc)
-        metadatas.append({
+        meta = {
             "event_id": event.id,
             "timestamp": event.timestamp,
             "modality": event.modality,
             "event_type": event.event_type.value,
             "confidence": event.confidence,
-        })
+        }
+        if user_id:
+            meta["user_id"] = user_id
+        metadatas.append(meta)
         ids.append(event.id)
 
     collection.add(documents=documents, metadatas=metadatas, ids=ids)
@@ -117,7 +128,7 @@ def _call_llm(context: str, question: str, groq_api_key: Optional[str] = None) -
     )
     user = f"Video event timeline (relevant excerpts):\n{context}\n\nQuestion: {question}"
 
-    effective_groq = groq_api_key or settings.groq_api_key
+    effective_groq = (groq_api_key or "").strip()
     provider = (settings.llm_provider or "").lower()
 
     if (provider == "groq" or effective_groq) and effective_groq:

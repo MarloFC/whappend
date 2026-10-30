@@ -1,6 +1,7 @@
 """
 Media router — handles multi-format ingestion (video, audio, image),
 status polling, event listing, and media streaming.
+All media records are scoped to the authenticated user (`user.id`).
 """
 
 import uuid
@@ -10,10 +11,12 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from fastapi import APIRouter, UploadFile, File, BackgroundTasks, HTTPException, Header, Form
+from fastapi import APIRouter, UploadFile, File, BackgroundTasks, HTTPException, Header, Form, Depends
 from fastapi.responses import FileResponse
 
 from config import settings
+from core.deps import get_current_user, resolve_user_groq_key
+from db.models import User
 from models.schemas import (
     VideoRecord, VideoStatus, TimelineEvent, EventType,
     VideoUploadResponse, VideoStatusResponse, EventsResponse, ChaptersResponse,
@@ -32,7 +35,7 @@ router = APIRouter(prefix="/videos", tags=["videos"])
 def _detect_media_type(filename: str, content_type: Optional[str] = None) -> str:
     ext = Path(filename).suffix.lower()
     ct = (content_type or "").lower()
-    if ct.startswith("audio/") or ext in [".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac", ".wma"]:
+    if ct.startswith("audio/") or ext in [".mp3", ".wav", ".m4a", ".ogg", ".oga", ".flac", ".aac", ".wma"]:
         return "audio"
     if ct.startswith("image/") or ext in [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff"]:
         return "image"
@@ -82,7 +85,6 @@ def process_video(video_id: str, api_key: Optional[str] = None):
             video.duration_seconds = 0.0
             video.frame_count = 1
 
-            # Cache copy into frames directory
             frames_dir = settings.storage_dir / "frames" / video.id
             frames_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(dest_path, frames_dir / "frame_00000.jpg")
@@ -142,8 +144,8 @@ def process_video(video_id: str, api_key: Optional[str] = None):
             audio_events = transcribe_video(video.id, video.filename, groq_api_key=api_key)
             timeline = merge_events(visual_events, audio_events)
 
-        # Index in ChromaDB for RAG
-        index_events(video_id, timeline)
+        # Index in ChromaDB for RAG (tagged with user_id)
+        index_events(video_id, timeline, user_id=video.user_id)
 
         # Persist events
         store.save_events(video_id, timeline)
@@ -166,24 +168,26 @@ def process_video(video_id: str, api_key: Optional[str] = None):
 async def upload_video(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    x_groq_api_key: Optional[str] = Header(None, alias="X-Groq-Api-Key"),
-    api_key: Optional[str] = Form(None),
+    user: User = Depends(get_current_user),
+    user_groq_key: str = Depends(resolve_user_groq_key),
 ):
-    """Upload a video, audio, or image file and start async processing."""
-    client_key = (x_groq_api_key or api_key or "").strip() or None
+    """Upload a video, audio, or image file and start async processing with the user's BYOK Groq key."""
     media_type = _detect_media_type(file.filename or "", file.content_type)
     if media_type == "unknown":
         raise HTTPException(
             status_code=400,
-            detail="Unsupported format. Please upload a Video (MP4, MOV, WEBM), Audio (MP3, WAV, M4A), or Image (JPG, PNG, WEBP)."
+            detail="Unsupported format. Please upload a Video (MP4, MOV, WEBM), Audio (MP3, WAV, M4A, OGG), or Image (JPG, PNG, WEBP)."
         )
 
     video_id = str(uuid.uuid4())
     ext = Path(file.filename or f"media_{video_id}").suffix
     if not ext:
-        if media_type == "image": ext = ".jpg"
-        elif media_type == "audio": ext = ".mp3"
-        else: ext = ".mp4"
+        if media_type == "image":
+            ext = ".jpg"
+        elif media_type == "audio":
+            ext = ".mp3"
+        else:
+            ext = ".mp4"
 
     filename = f"{video_id}{ext}"
     dest = settings.storage_dir / "videos" / filename
@@ -193,15 +197,16 @@ async def upload_video(
 
     video = VideoRecord(
         id=video_id,
+        user_id=user.id,
         filename=filename,
         original_name=file.filename or filename,
         media_type=media_type,
         status=VideoStatus.PENDING,
+        source="web",
     )
-    store.save_video(video)
+    store.save_video(video, user_id=user.id, source="web")
 
-    # Kick off processing in the background with client's API key if provided
-    background_tasks.add_task(process_video, video_id, client_key)
+    background_tasks.add_task(process_video, video_id, user_groq_key)
 
     return VideoUploadResponse(
         video_id=video_id,
@@ -212,12 +217,14 @@ async def upload_video(
 
 
 @router.get("", response_model=list[VideoStatusResponse])
-async def list_videos():
-    """List all media."""
-    videos = store.list_videos()
+async def list_videos(user: User = Depends(get_current_user)):
+    """List all media belonging to the authenticated user (both web and Telegram uploads)."""
+    videos = store.list_videos(user_id=user.id)
     return [
         VideoStatusResponse(
             video_id=v.id,
+            original_name=v.original_name,
+            source=getattr(v, "source", "web"),
             media_type=getattr(v, "media_type", "video"),
             status=v.status,
             duration_seconds=v.duration_seconds,
@@ -230,14 +237,16 @@ async def list_videos():
 
 
 @router.get("/{video_id}/status", response_model=VideoStatusResponse)
-async def get_status(video_id: str):
+async def get_status(video_id: str, user: User = Depends(get_current_user)):
     """Poll media processing status."""
-    video = store.get_video(video_id)
+    video = store.get_video(video_id, user_id=user.id)
     if not video:
         raise HTTPException(status_code=404, detail="Media not found.")
 
     return VideoStatusResponse(
         video_id=video.id,
+        original_name=video.original_name,
+        source=getattr(video, "source", "web"),
         media_type=getattr(video, "media_type", "video"),
         status=video.status,
         duration_seconds=video.duration_seconds,
@@ -248,9 +257,9 @@ async def get_status(video_id: str):
 
 
 @router.get("/{video_id}/events", response_model=EventsResponse)
-async def get_events(video_id: str):
+async def get_events(video_id: str, user: User = Depends(get_current_user)):
     """Get the processed timeline events for media."""
-    video = store.get_video(video_id)
+    video = store.get_video(video_id, user_id=user.id)
     if not video:
         raise HTTPException(status_code=404, detail="Media not found.")
     if video.status != VideoStatus.COMPLETED:
@@ -261,9 +270,9 @@ async def get_events(video_id: str):
 
 
 @router.get("/{video_id}/media")
-async def get_media_file(video_id: str):
+async def get_media_file(video_id: str, user: User = Depends(get_current_user)):
     """Stream or serve the original uploaded media file."""
-    video = store.get_video(video_id)
+    video = store.get_video(video_id, user_id=user.id)
     if not video:
         raise HTTPException(status_code=404, detail="Media not found.")
     media_path = settings.storage_dir / "videos" / video.filename
@@ -276,7 +285,7 @@ async def get_media_file(video_id: str):
     if media_type == "image":
         media_content_type = "image/png" if ext == ".png" else "image/webp" if ext == ".webp" else "image/jpeg"
     elif media_type == "audio":
-        media_content_type = "audio/wav" if ext == ".wav" else "audio/mp4" if ext == ".m4a" else "audio/mpeg"
+        media_content_type = "audio/wav" if ext == ".wav" else "audio/mp4" if ext == ".m4a" else "audio/ogg" if ext in (".ogg", ".oga") else "audio/mpeg"
     else:
         media_content_type = "video/webm" if ext == ".webm" else "video/mp4"
 
@@ -290,19 +299,19 @@ async def get_media_file(video_id: str):
 @router.get("/{video_id}/chapters", response_model=ChaptersResponse)
 async def get_video_chapters(
     video_id: str,
-    x_groq_api_key: Optional[str] = Header(None, alias="X-Groq-Api-Key"),
+    user: User = Depends(get_current_user),
+    user_groq_key: str = Depends(resolve_user_groq_key),
 ):
     """
     Generates and returns structured AI chapters for the media using LangChain.
     Chapters are synthesized from the timeline and cached for subsequent requests.
     """
-    video = store.get_video(video_id)
+    video = store.get_video(video_id, user_id=user.id)
     if not video:
         raise HTTPException(status_code=404, detail="Media not found.")
     if video.status != VideoStatus.COMPLETED:
         raise HTTPException(status_code=202, detail=f"Media is still {video.status.value}.")
 
-    # Check cache first
     cached = store.get_chapters(video_id)
     if cached:
         return cached
@@ -312,7 +321,7 @@ async def get_video_chapters(
         video_id=video_id,
         events=events,
         duration_seconds=video.duration_seconds,
-        groq_api_key=x_groq_api_key,
+        groq_api_key=user_groq_key,
     )
     store.save_chapters(video_id, chapters)
     return chapters

@@ -34,12 +34,39 @@ export interface VideoUploadResponse {
 
 export interface VideoStatusResponse {
   video_id: string;
+  original_name?: string | null;
+  source?: "web" | "telegram" | string;
   media_type?: MediaType;
   status: VideoStatus;
   duration_seconds: number | null;
   frame_count: number | null;
   event_count: number | null;
   error: string | null;
+}
+
+export interface UserProfile {
+  id: string;
+  phone_e164: string;
+  telegram_user_id?: number | null;
+  telegram_username?: string | null;
+  display_name?: string | null;
+  role: "admin" | "user" | string;
+  has_groq_key: boolean;
+  groq_key_last4?: string | null;
+  groq_key_validated_at?: string | null;
+}
+
+export interface AllowedUserItem {
+  id: string;
+  phone_e164: string;
+  role: string;
+  is_active: boolean;
+  display_name?: string | null;
+  telegram_user_id?: number | null;
+  telegram_username?: string | null;
+  has_groq_key: boolean;
+  groq_key_last4?: string | null;
+  created_at: string;
 }
 
 export interface EventsResponse {

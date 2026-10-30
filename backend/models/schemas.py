@@ -60,10 +60,12 @@ class TimelineEvent(BaseModel):
 
 class VideoRecord(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: Optional[str] = None
     filename: str
     original_name: str
     media_type: str = "video"  # "video" | "audio" | "image"
     status: VideoStatus = VideoStatus.PENDING
+    source: str = "web"        # "web" | "telegram"
     duration_seconds: Optional[float] = None
     frame_count: Optional[int] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -82,6 +84,8 @@ class VideoUploadResponse(BaseModel):
 
 class VideoStatusResponse(BaseModel):
     video_id: str
+    original_name: Optional[str] = None
+    source: Optional[str] = "web"
     media_type: str = "video"
     status: VideoStatus
     duration_seconds: Optional[float]

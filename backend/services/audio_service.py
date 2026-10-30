@@ -110,7 +110,7 @@ def _transcribe_groq(filename: str, groq_api_key: Optional[str] = None) -> list[
     if not video_path.exists():
         raise FileNotFoundError(f"Video file not found: {video_path}")
 
-    effective_key = groq_api_key or settings.groq_api_key
+    effective_key = (groq_api_key or "").strip()
     if not effective_key:
         raise ValueError("Groq API key is missing.")
 
@@ -187,7 +187,7 @@ def transcribe_video(video_id: str, filename: str, groq_api_key: Optional[str] =
     if settings.mock_mode:
         return _mock_transcribe()
 
-    effective_groq = groq_api_key or settings.groq_api_key
+    effective_groq = (groq_api_key or "").strip()
     if effective_groq:
         try:
             return _transcribe_groq(filename, groq_api_key=effective_groq)

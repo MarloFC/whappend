@@ -1,0 +1,76 @@
+"""
+SQLAlchemy engine/session setup.
+
+Works with Neon Postgres (production) or a local SQLite file (dev fallback).
+"""
+
+from contextlib import contextmanager
+from typing import Iterator
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+
+from config import settings
+
+
+def _normalize_url(url: str) -> str:
+    """Neon gives `postgresql://` / `postgres://`; we want the psycopg (v3) driver."""
+    if not url:
+        return f"sqlite:///{(settings.storage_dir / 'whappend.db').as_posix()}"
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        url = "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
+
+
+DATABASE_URL = _normalize_url(settings.database_url)
+IS_SQLITE = DATABASE_URL.startswith("sqlite")
+
+engine = create_engine(
+    DATABASE_URL,
+    # Neon suspends idle compute; pre_ping transparently replaces dead connections.
+    pool_pre_ping=True,
+    pool_recycle=300,
+    connect_args={"check_same_thread": False} if IS_SQLITE else {},
+)
+
+SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+@contextmanager
+def session_scope() -> Iterator[Session]:
+    """Transactional scope for non-request code (bot handlers, background jobs, CLI)."""
+    session = SessionLocal()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def get_db() -> Iterator[Session]:
+    """FastAPI dependency."""
+    session = SessionLocal()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def init_db() -> None:
+    """Create tables if they don't exist. (Swap for Alembic migrations once the schema stabilizes.)"""
+    from db import models  # noqa: F401 — register models
+
+    Base.metadata.create_all(bind=engine)

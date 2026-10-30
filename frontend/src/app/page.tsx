@@ -1,19 +1,50 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { Film, Loader2, CheckCircle, AlertCircle, ChevronRight, Key, BookOpen, ListTree } from "lucide-react";
+import {
+  Film,
+  Loader2,
+  CheckCircle,
+  AlertCircle,
+  ChevronRight,
+  Key,
+  BookOpen,
+  ListTree,
+  LogOut,
+  Send,
+  Globe,
+} from "lucide-react";
 import VideoUploader from "@/components/VideoUploader";
 import MediaViewer, { resolveMediaType } from "@/components/MediaViewer";
 import EventTimeline from "@/components/EventTimeline";
 import ChaptersView from "@/components/ChaptersView";
 import ChatPanel from "@/components/ChatPanel";
 import ApiKeyModal from "@/components/ApiKeyModal";
-import { uploadVideo, getVideoStatus, getVideoEvents, getStoredApiKey } from "@/lib/api";
-import type { VideoStatus, TimelineEvent, MediaType } from "@/lib/types";
+import AuthModal from "@/components/AuthModal";
+import {
+  uploadVideo,
+  getVideoStatus,
+  getVideoEvents,
+  getCurrentUser,
+  clearAuthToken,
+  listVideos,
+  getMediaStreamUrl,
+} from "@/lib/api";
+import type {
+  VideoStatus,
+  TimelineEvent,
+  MediaType,
+  UserProfile,
+  VideoStatusResponse,
+} from "@/lib/types";
 
 type AppState = "idle" | "uploading" | "processing" | "ready" | "error";
 
 export default function Home() {
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [myLibrary, setMyLibrary] = useState<VideoStatusResponse[]>([]);
+
   const [appState, setAppState] = useState<AppState>("idle");
   const [videoId, setVideoId] = useState<string | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -29,63 +60,119 @@ export default function Home() {
   const [hasCustomKey, setHasCustomKey] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  useEffect(() => {
-    setHasCustomKey(Boolean(getStoredApiKey()));
+  const refreshLibrary = useCallback(async () => {
+    try {
+      const items = await listVideos();
+      setMyLibrary(items);
+    } catch {
+      // ignore
+    }
   }, []);
+
+  useEffect(() => {
+    getCurrentUser()
+      .then((u) => {
+        setUser(u);
+        if (u) {
+          setHasCustomKey(u.has_groq_key);
+          refreshLibrary();
+        }
+      })
+      .finally(() => setAuthChecking(false));
+  }, [refreshLibrary]);
 
   const stopPolling = () => {
     if (pollRef.current) clearInterval(pollRef.current);
   };
 
-  const startPolling = useCallback((id: string) => {
-    pollRef.current = setInterval(async () => {
-      try {
-        const s = await getVideoStatus(id);
-        setStatus(s.status);
+  const startPolling = useCallback(
+    (id: string) => {
+      pollRef.current = setInterval(async () => {
+        try {
+          const s = await getVideoStatus(id);
+          setStatus(s.status);
 
-        if (s.status === "completed") {
-          stopPolling();
-          const evRes = await getVideoEvents(id);
+          if (s.status === "completed") {
+            stopPolling();
+            const evRes = await getVideoEvents(id);
+            setEvents(evRes.events);
+            setAppState("ready");
+            refreshLibrary();
+          } else if (s.status === "failed") {
+            stopPolling();
+            setError(s.error ?? "Processing failed.");
+            setAppState("error");
+            refreshLibrary();
+          }
+        } catch {
+          // keep polling
+        }
+      }, 2500);
+    },
+    [refreshLibrary]
+  );
+
+  const handleUpload = useCallback(
+    async (file: File) => {
+      if (!hasCustomKey) {
+        setIsKeyModalOpen(true);
+        return;
+      }
+
+      setAppState("uploading");
+      setVideoFile(file);
+      setVideoUrl(URL.createObjectURL(file));
+      setError(null);
+
+      const localType = resolveMediaType(file, "video");
+      setMediaType(localType);
+
+      try {
+        const res = await uploadVideo(file);
+        setVideoId(res.video_id);
+        setAppState("processing");
+        setStatus("processing");
+        startPolling(res.video_id);
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : "Upload failed.");
+        setAppState("error");
+      }
+    },
+    [startPolling, hasCustomKey]
+  );
+
+  const handleSelectExistingMedia = useCallback(
+    async (item: VideoStatusResponse) => {
+      stopPolling();
+      setError(null);
+      setVideoFile(null);
+      setVideoId(item.video_id);
+      setMediaType((item.media_type as MediaType) || "video");
+      setVideoUrl(getMediaStreamUrl(item.video_id));
+
+      if (item.status === "completed") {
+        try {
+          const evRes = await getVideoEvents(item.video_id);
           setEvents(evRes.events);
           setAppState("ready");
-        } else if (s.status === "failed") {
-          stopPolling();
-          setError(s.error ?? "Processing failed.");
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "Failed to load media events.");
           setAppState("error");
         }
-      } catch {
-        // keep polling
+      } else if (item.status === "processing" || item.status === "pending") {
+        setAppState("processing");
+        startPolling(item.video_id);
+      } else {
+        setError(item.error ?? "Media processing failed.");
+        setAppState("error");
       }
-    }, 2500);
-  }, []);
-
-  const handleUpload = useCallback(async (file: File) => {
-    setAppState("uploading");
-    setVideoFile(file);
-    setVideoUrl(URL.createObjectURL(file));
-    setError(null);
-
-    // The local file is the source of truth for the media kind
-    const localType = resolveMediaType(file, "video");
-    setMediaType(localType);
-
-    try {
-      const res = await uploadVideo(file);
-      setVideoId(res.video_id);
-      setAppState("processing");
-      setStatus("processing");
-      startPolling(res.video_id);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Upload failed.");
-      setAppState("error");
-    }
-  }, [startPolling]);
+    },
+    [startPolling]
+  );
 
   const handleEventClick = useCallback((event: TimelineEvent) => {
     setActiveEventId(event.id);
-    // Subtle 150ms lead-in buffer so speech starts from the first syllable
     setSeekTo(Math.max(0, event.timestamp - 0.15));
-    // Reset seekTo after a tick so clicking the same timestamp can re-trigger
     setTimeout(() => setSeekTo(undefined), 100);
   }, []);
 
@@ -100,10 +187,43 @@ export default function Home() {
     setActiveEventId(undefined);
     setError(null);
     setActiveTab("timeline");
+    refreshLibrary();
   };
+
+  const handleLogout = () => {
+    stopPolling();
+    clearAuthToken();
+    setUser(null);
+    setMyLibrary([]);
+    reset();
+  };
+
+  if (authChecking) {
+    return (
+      <main className="app">
+        <div className="status-screen">
+          <Loader2 size={32} className="animate-spin" />
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="app">
+      {/* ── Auth Gate ── */}
+      {!user && (
+        <AuthModal
+          onAuthenticated={(loggedUser) => {
+            setUser(loggedUser);
+            setHasCustomKey(loggedUser.has_groq_key);
+            refreshLibrary();
+            if (!loggedUser.has_groq_key) {
+              setIsKeyModalOpen(true);
+            }
+          }}
+        />
+      )}
+
       {/* ── Header ── */}
       <header className="app-header">
         <div className="app-header-inner">
@@ -111,19 +231,39 @@ export default function Home() {
             <Film size={24} />
             <span>WhAppend</span>
           </div>
-          <p className="app-tagline">Multimodal Intelligence: Video · Audio · Image</p>
+          <p className="app-tagline">Multimodal Intelligence: Video · Audio · Image · Telegram</p>
           <div className="header-actions">
-            <button
-              className={`btn btn-sm ${hasCustomKey ? "btn-key-active" : "btn-secondary"}`}
-              onClick={() => setIsKeyModalOpen(true)}
-              title="Configure Groq API Key (BYOK)"
-            >
-              <Key size={14} />
-              <span>{hasCustomKey ? "Custom Key Active" : "API Key"}</span>
-            </button>
+            {user && (
+              <>
+                <span style={{ fontSize: "0.78rem", opacity: 0.75, marginRight: 4 }}>
+                  {user.phone_e164}
+                </span>
+                <button
+                  className={`btn btn-sm ${hasCustomKey ? "btn-key-active" : "btn-secondary"}`}
+                  onClick={() => setIsKeyModalOpen(true)}
+                  title="Configure your encrypted BYOK Groq API key"
+                >
+                  <Key size={14} />
+                  <span>
+                    {hasCustomKey
+                      ? `Groq Key ${user.groq_key_last4 ? `(••${user.groq_key_last4})` : "Active"}`
+                      : "Set BYOK Key"}
+                  </span>
+                </button>
+              </>
+            )}
             {appState !== "idle" && (
               <button className="btn btn-ghost btn-sm" onClick={reset}>
-                ↩ New Media
+                ↩ Library / Upload
+              </button>
+            )}
+            {user && (
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={handleLogout}
+                title="Sign out"
+              >
+                <LogOut size={14} />
               </button>
             )}
           </div>
@@ -132,7 +272,7 @@ export default function Home() {
 
       {/* ── Content ── */}
       <div className="app-body">
-        {/* IDLE: upload screen */}
+        {/* IDLE: upload screen + recent Web & Telegram media library */}
         {appState === "idle" && (
           <div className="upload-screen">
             <div className="upload-hero">
@@ -141,10 +281,53 @@ export default function Home() {
                 <span className="hero-accent">Understand everything.</span>
               </h1>
               <p className="hero-subtitle">
-                AI-powered event detection and insights for Videos, Audio, and Images with Groq &amp; RAG Q&amp;A.
+                AI-powered event detection and insights for Videos, Audio, and Images with your personal BYOK Groq key — synced across Web &amp; Telegram.
               </p>
             </div>
             <VideoUploader onUpload={handleUpload} isUploading={false} />
+
+            {myLibrary.length > 0 && (
+              <div style={{ width: "100%", maxWidth: 680, marginTop: 28 }}>
+                <h3 style={{ fontSize: "0.9rem", opacity: 0.8, marginBottom: 10 }}>
+                  Your Recent Media (Web &amp; Telegram)
+                </h3>
+                <div style={{ display: "grid", gap: 8 }}>
+                  {myLibrary.slice(0, 8).map((item) => (
+                    <button
+                      key={item.video_id}
+                      type="button"
+                      onClick={() => handleSelectExistingMedia(item)}
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        padding: "10px 14px",
+                        borderRadius: 10,
+                        background: "rgba(255,255,255,0.03)",
+                        border: "1px solid rgba(255,255,255,0.08)",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        color: "inherit",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        {item.source === "telegram" ? <Send size={15} /> : <Globe size={15} />}
+                        <div>
+                          <div style={{ fontWeight: 500, fontSize: "0.88rem" }}>
+                            {item.original_name || item.video_id}
+                          </div>
+                          <div style={{ fontSize: "0.75rem", opacity: 0.65 }}>
+                            {item.media_type} · via {item.source || "web"} ·{" "}
+                            {item.event_count ?? 0} events
+                          </div>
+                        </div>
+                      </div>
+                      <span style={{ fontSize: "0.78rem", opacity: 0.8 }}>{item.status}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -295,10 +478,17 @@ export default function Home() {
           </div>
         )}
       </div>
+
       <ApiKeyModal
         isOpen={isKeyModalOpen}
         onClose={() => setIsKeyModalOpen(false)}
-        onKeyChange={(has) => setHasCustomKey(has)}
+        user={user}
+        onKeyChange={(has, last4) => {
+          setHasCustomKey(has);
+          if (user) {
+            setUser({ ...user, has_groq_key: has, groq_key_last4: last4 ?? null });
+          }
+        }}
       />
     </main>
   );

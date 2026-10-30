@@ -8,34 +8,54 @@ try:
 except Exception:
     pass
 
+from contextlib import asynccontextmanager
 from typing import Optional
-from pydantic import BaseModel
-from fastapi import FastAPI, Header
+
+from fastapi import FastAPI, Header, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import videos, ask
+from bot.app import process_webhook_update, start_bot_lifecycle, stop_bot_lifecycle
+from config import settings
+from core.repositories import seed_admin_phones
+from db.base import init_db, session_scope
+from routers import admin, ask, auth, keys, videos
 
 
-class KeyValidateRequest(BaseModel):
-    api_key: Optional[str] = None
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 1. Initialize database tables (Neon Postgres or local SQLite)
+    init_db()
+    # 2. Seed any ADMIN_PHONES defined in .env into the allowlist
+    with session_scope() as db:
+        seeded = seed_admin_phones(db)
+        if seeded:
+            print(f"[Startup] Seeded {seeded} admin phone number(s) from ADMIN_PHONES.")
+    # 3. Start Telegram bot (webhook if TELEGRAM_WEBHOOK_URL set, otherwise long-polling)
+    await start_bot_lifecycle()
+    yield
+    await stop_bot_lifecycle()
+
 
 app = FastAPI(
     title="WhAppend API",
-    description="Video analysis with timestamped events and LLM Q&A",
-    version="0.1.0",
+    description="Multimodal video/audio/image intelligence with phone-allowlist auth, encrypted BYOK Groq keys, and Telegram Bot integration",
+    version="0.2.0",
+    lifespan=lifespan,
 )
 
 # ─── CORS ─────────────────────────────────────────────────────────────────────
-# Allow Next.js dev server (port 3000) and production domain
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_origins=settings.cors_origin_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ─── Routers ──────────────────────────────────────────────────────────────────
+app.include_router(auth.router)
+app.include_router(keys.router)
+app.include_router(admin.router)
 app.include_router(videos.router)
 app.include_router(ask.router)
 
@@ -47,33 +67,29 @@ async def health():
 
 @app.get("/config/key-status")
 async def key_status():
-    """Checks whether the backend server has a default Groq API key configured."""
-    from config import settings
-    has_key = bool(settings.groq_api_key and not settings.groq_api_key.startswith("gsk_your_"))
+    """
+    Returns model & BYOK policy metadata.
+    `has_server_key` is always False because WhAppend runs strictly in BYOK mode.
+    """
     return {
-        "has_server_key": has_key,
+        "has_server_key": False,
+        "byok_required": True,
         "provider": settings.llm_provider,
         "vision_model": settings.groq_vision_model,
         "llm_model": settings.groq_llm_model,
+        "telegram_enabled": bool(settings.telegram_bot_token),
     }
 
 
-
-@app.post("/auth/validate-key")
-async def validate_key(
-    body: Optional[KeyValidateRequest] = None,
-    x_groq_api_key: Optional[str] = Header(None, alias="X-Groq-Api-Key"),
+@app.post("/telegram/webhook")
+async def telegram_webhook(
+    request: Request,
+    x_telegram_bot_api_secret_token: Optional[str] = Header(None),
 ):
-    """Validates if a provided Groq API key is active and authorized."""
-    key = (x_groq_api_key or (body.api_key if body else "") or "").strip()
-    if not key:
-        return {"valid": False, "error": "No API key provided."}
-
-    try:
-        from groq import Groq
-        client = Groq(api_key=key)
-        # Fast query to list models to verify authentication
-        client.models.list()
-        return {"valid": True, "message": "Groq API key is valid and connected!"}
-    except Exception as e:
-        return {"valid": False, "error": str(e)}
+    """Receives updates from Telegram when running in webhook mode."""
+    expected = (settings.telegram_webhook_secret or "").strip()
+    if expected and x_telegram_bot_api_secret_token != expected:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid webhook secret.")
+    payload = await request.json()
+    await process_webhook_update(payload)
+    return {"ok": True}

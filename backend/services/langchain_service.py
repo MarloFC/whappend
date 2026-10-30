@@ -25,8 +25,8 @@ from models.schemas import (
 
 
 def _get_llm(groq_api_key: Optional[str] = None, temperature: float = 0.2) -> Optional[ChatGroq]:
-    """Instantiates ChatGroq with user-provided key or server default."""
-    effective_key = groq_api_key or settings.groq_api_key
+    """Instantiates ChatGroq with the user's BYOK key (no server default key)."""
+    effective_key = (groq_api_key or "").strip()
     if not effective_key:
         return None
     return ChatGroq(
@@ -35,6 +35,48 @@ def _get_llm(groq_api_key: Optional[str] = None, temperature: float = 0.2) -> Op
         temperature=temperature,
         max_tokens=600,
     )
+
+
+def answer_free_chat(
+    question: str,
+    history: Optional[list[ChatMessage]] = None,
+    groq_api_key: Optional[str] = None,
+) -> str:
+    """
+    General-purpose conversational LLM chat powered by the user's BYOK Groq key,
+    used when chatting on Telegram without an active media selected.
+    """
+    llm = _get_llm(groq_api_key=groq_api_key, temperature=0.4)
+    if not llm:
+        return "No Groq API key is configured for your account. Send /setkey to configure your BYOK key."
+
+    prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            "You are WhAppend AI, a helpful, concise multimodal assistant on Telegram. "
+            "You can chat about any topic, or analyze videos, audio notes, and photos when the user sends them.",
+        ),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("human", "{question}"),
+    ])
+
+    lc_history = []
+    if history:
+        for msg in history[-10:]:
+            if msg.role.lower() == "user":
+                lc_history.append(HumanMessage(content=msg.content))
+            else:
+                lc_history.append(AIMessage(content=msg.content))
+
+    chain = prompt | llm | StrOutputParser()
+    try:
+        return chain.invoke({
+            "chat_history": lc_history,
+            "question": question,
+        }).strip()
+    except Exception as exc:
+        from core.security import mask_key_in_text
+        raise RuntimeError(mask_key_in_text(str(exc))) from exc
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
